@@ -28,7 +28,7 @@ Clone the repo to the desired location
 
 ```bash
 git clone https://github.com/mialeevs/kube_vagrant.git
-cd kubernetes_installation_vagrant
+cd kube_vagrant
 
 # Rename the Vagrant file based on the provider to "Vagrantfile" and run below command
 vagrant up
