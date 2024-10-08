@@ -30,6 +30,7 @@ Clone the repo to the desired location
 git clone https://github.com/mialeevs/kube_vagrant.git
 cd kube_vagrant
 
-# Rename the Vagrant file based on the provider to "Vagrantfile" and run below command
+# Update the settings.yaml file for desired worker node count and run below command.
+# Update the same file for memory and cpu allocation for the cp and worker nodes as needed.
 vagrant up
 ```
