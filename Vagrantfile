@@ -72,7 +72,9 @@ Vagrant.configure("2") do |config|
         "CRIO_VERSION" => settings["software"]["crio"],
         "CONTROL_IP" => settings["nodes"]["control"]["ip"],
         "POD_CIDR" => settings["network"]["pod_cidr"],
-        "SERVICE_CIDR" => settings["network"]["service_cidr"]
+        "SERVICE_CIDR" => settings["network"]["service_cidr"],
+        "HELM_VERSION" => settings["software"]["helm"],
+        "ARGOCD_VERSION" => settings["software"]["argocd"]
       },
       path: "scripts/control.sh"
   end

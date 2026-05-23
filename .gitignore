@@ -27,6 +27,8 @@ kubeconfig
 
 # Generated join commands and tokens
 join.sh
+configs/join.sh
+configs/config
 
 # ============================================================================
 # SSH Keys and Certificates (NEVER commit private keys!)

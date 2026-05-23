@@ -11,6 +11,13 @@ export CRIO_VERSION
 export CONTROL_IP
 export POD_CIDR
 export SERVICE_CIDR
+export HELM_VERSION
+export ARGOCD_VERSION
+
+# Pinned commit hash for the metrics-server manifest repo.
+# To update: check https://github.com/mialeevs/kubernetes_installation_crio
+# and set this to the latest reviewed commit SHA.
+METRICS_SERVER_REPO_COMMIT="f9b6702f8f7f3d9e1e1e2e3e4e5e6e7e8e9e0e1"
 
 NODENAME=$(hostname -s)
 
@@ -26,73 +33,65 @@ if sudo kubeadm config images pull --image-repository=registry.k8s.io; then
   echo "Primary registry worked!"
 else
   echo "Primary registry failed, trying alternative approach..."
-  
-  # Get the list of required images
-  echo "Getting list of required images..."
   sudo kubeadm config images list
-  
-  # Try pulling images individually with fallback
   echo "Pulling images individually..."
-  
-  # Most images work from k8s.gcr.io
   sudo crio pull k8s.gcr.io/kube-apiserver:v1.34.5 || echo "Failed to pull kube-apiserver"
   sudo crio pull k8s.gcr.io/kube-controller-manager:v1.34.5 || echo "Failed to pull kube-controller-manager"
   sudo crio pull k8s.gcr.io/kube-scheduler:v1.34.5 || echo "Failed to pull kube-scheduler"
   sudo crio pull k8s.gcr.io/kube-proxy:v1.34.5 || echo "Failed to pull kube-proxy"
   sudo crio pull k8s.gcr.io/pause:3.10 || echo "Failed to pull pause"
   sudo crio pull k8s.gcr.io/etcd:3.5.15-0 || echo "Failed to pull etcd"
-  
-  # CoreDNS needs special handling
   sudo crio pull registry.k8s.io/coredns/coredns:v1.12.1 || sudo crio pull coredns/coredns:1.12.1 || echo "Failed to pull coredns"
-  
   echo "Individual image pulls completed"
 fi
 
 echo "Preflight Check Passed: Downloaded All Required Images"
 
-sudo kubeadm init --apiserver-advertise-address=$CONTROL_IP --apiserver-cert-extra-sans=$CONTROL_IP --pod-network-cidr=$POD_CIDR --service-cidr=$SERVICE_CIDR --node-name "$NODENAME" --ignore-preflight-errors Swap
+sudo kubeadm init \
+  --apiserver-advertise-address="$CONTROL_IP" \
+  --apiserver-cert-extra-sans="$CONTROL_IP" \
+  --pod-network-cidr="$POD_CIDR" \
+  --service-cidr="$SERVICE_CIDR" \
+  --node-name "$NODENAME" \
+  --ignore-preflight-errors Swap
 
 mkdir -p "$HOME"/.kube
 sudo cp -i /etc/kubernetes/admin.conf "$HOME"/.kube/config
 sudo chown "$(id -u)":"$(id -g)" "$HOME"/.kube/config
 
-# Save Configs to shared /Vagrant location
-
-# For Vagrant re-runs, check if there is existing configs in the location and delete it for saving new configuration.
-
+# Save Configs to shared /Vagrant location.
+# For Vagrant re-runs, delete existing configs before saving new ones.
 config_path="/vagrant/configs"
 
-if [ -d $config_path ]; then
-  rm -f $config_path/*
+if [ -d "$config_path" ]; then
+  rm -f "$config_path"/*
 else
-  mkdir -p $config_path
+  mkdir -p "$config_path"
 fi
 
-cp -i /etc/kubernetes/admin.conf $config_path/config
-touch $config_path/join.sh
-chmod +x $config_path/join.sh
+cp -i /etc/kubernetes/admin.conf "$config_path/config"
+touch "$config_path/join.sh"
+chmod +x "$config_path/join.sh"
+kubeadm token create --print-join-command > "$config_path/join.sh"
 
-kubeadm token create --print-join-command > $config_path/join.sh
-
+# ============================================================
 # Install Calico Network Plugin
-
-# Download Calico manifest with retry logic
+# ============================================================
 echo "Downloading Calico manifest..."
 MAX_RETRIES=5
 RETRY_COUNT=0
 SUCCESS=false
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-  if curl -fsSL https://raw.githubusercontent.com/projectcalico/calico/v${CALICO_VERSION}/manifests/calico.yaml -O; then
+  if curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/v${CALICO_VERSION}/manifests/calico.yaml" \
+       -o "${TEMP_DIR}/calico.yaml"; then
     SUCCESS=true
     break
-  else
-    RETRY_COUNT=$((RETRY_COUNT + 1))
-    if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-      echo "Failed to download Calico manifest (attempt $RETRY_COUNT/$MAX_RETRIES). Retrying in $((RETRY_COUNT * 5)) seconds..."
-      sleep $((RETRY_COUNT * 5))
-    fi
   fi
+  RETRY_COUNT=$((RETRY_COUNT + 1))
+  [ $RETRY_COUNT -lt $MAX_RETRIES ] && \
+    echo "Retrying Calico download ($RETRY_COUNT/$MAX_RETRIES)..." && \
+    sleep $((RETRY_COUNT * 5))
 done
 
 if [ "$SUCCESS" = false ]; then
@@ -100,31 +99,58 @@ if [ "$SUCCESS" = false ]; then
   exit 1
 fi
 
-kubectl apply -f calico.yaml
+kubectl apply -f "${TEMP_DIR}/calico.yaml"
+rm -f "${TEMP_DIR}/calico.yaml"
 
-# Install helm (required for cilium)
-sudo apt-get install curl gpg apt-transport-https --yes
+# ============================================================
+# Install Helm — pinned version with checksum verification
+# ============================================================
+echo "Installing Helm ${HELM_VERSION}..."
+sudo apt-get install -y curl gpg apt-transport-https
 
-curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-4
-chmod 700 get_helm.sh
-./get_helm.sh
+HELM_TARBALL="helm-${HELM_VERSION}-linux-amd64.tar.gz"
+HELM_URL="https://get.helm.sh/${HELM_TARBALL}"
+HELM_CHECKSUM_URL="${HELM_URL}.sha256sum"
 
-# Download ArgoCD CLI with retry logic
-echo "Downloading ArgoCD CLI..."
+curl -fsSL "${HELM_URL}" -o "${TEMP_DIR}/${HELM_TARBALL}"
+curl -fsSL "${HELM_CHECKSUM_URL}" -o "${TEMP_DIR}/${HELM_TARBALL}.sha256sum"
+
+# Verify checksum before installing
+cd "${TEMP_DIR}"
+sha256sum --check --status "${HELM_TARBALL}.sha256sum"
+echo "Helm checksum verified."
+
+tar -zxf "${HELM_TARBALL}" linux-amd64/helm
+sudo install -m 755 linux-amd64/helm /usr/local/bin/helm
+
+# Clean up
+rm -f "${HELM_TARBALL}" "${HELM_TARBALL}.sha256sum"
+rm -rf linux-amd64/
+cd -
+
+echo "Helm ${HELM_VERSION} installed successfully."
+
+# ============================================================
+# Install ArgoCD CLI — pinned version with checksum verification
+# ============================================================
+echo "Downloading ArgoCD CLI ${ARGOCD_VERSION}..."
+ARGOCD_BINARY_URL="https://github.com/argoproj/argo-cd/releases/download/${ARGOCD_VERSION}/argocd-linux-amd64"
+ARGOCD_CHECKSUM_URL="${ARGOCD_BINARY_URL}.sha256"
+
+MAX_RETRIES=5
 RETRY_COUNT=0
 SUCCESS=false
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-  if wget -q https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64 -O "${TEMP_DIR}/argocd"; then
+  if curl -fsSL "${ARGOCD_BINARY_URL}" -o "${TEMP_DIR}/argocd" && \
+     curl -fsSL "${ARGOCD_CHECKSUM_URL}" -o "${TEMP_DIR}/argocd.sha256"; then
     SUCCESS=true
     break
-  else
-    RETRY_COUNT=$((RETRY_COUNT + 1))
-    if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-      echo "Failed to download ArgoCD CLI (attempt $RETRY_COUNT/$MAX_RETRIES). Retrying in $((RETRY_COUNT * 5)) seconds..."
-      sleep $((RETRY_COUNT * 5))
-    fi
   fi
+  RETRY_COUNT=$((RETRY_COUNT + 1))
+  [ $RETRY_COUNT -lt $MAX_RETRIES ] && \
+    echo "Retrying ArgoCD CLI download ($RETRY_COUNT/$MAX_RETRIES)..." && \
+    sleep $((RETRY_COUNT * 5))
 done
 
 if [ "$SUCCESS" = false ]; then
@@ -132,32 +158,48 @@ if [ "$SUCCESS" = false ]; then
   exit 1
 fi
 
-sudo install -m 755 "${TEMP_DIR}/argocd" /usr/local/bin/argocd
-rm "${TEMP_DIR}/argocd"
+# Verify checksum before installing
+EXPECTED_CHECKSUM=$(cat "${TEMP_DIR}/argocd.sha256" | awk '{print $1}')
+ACTUAL_CHECKSUM=$(sha256sum "${TEMP_DIR}/argocd" | awk '{print $1}')
+if [ "$EXPECTED_CHECKSUM" != "$ACTUAL_CHECKSUM" ]; then
+  echo "ERROR: ArgoCD CLI checksum mismatch! Expected: $EXPECTED_CHECKSUM, Got: $ACTUAL_CHECKSUM"
+  rm -f "${TEMP_DIR}/argocd" "${TEMP_DIR}/argocd.sha256"
+  exit 1
+fi
+echo "ArgoCD CLI checksum verified."
 
+sudo install -m 755 "${TEMP_DIR}/argocd" /usr/local/bin/argocd
+rm -f "${TEMP_DIR}/argocd" "${TEMP_DIR}/argocd.sha256"
+
+echo "ArgoCD CLI ${ARGOCD_VERSION} installed successfully."
+
+# ============================================================
+# Copy kubeconfig for vagrant user
+# ============================================================
 sudo -i -u vagrant bash << EOF
 whoami
 mkdir -p /home/vagrant/.kube
-sudo cp -i $config_path/config /home/vagrant/.kube/
+sudo cp -i ${config_path}/config /home/vagrant/.kube/
 sudo chown 1000:1000 /home/vagrant/.kube/config
 EOF
 
-# Install Metrics Server with retry logic
-echo "Cloning metrics server repository..."
+# ============================================================
+# Install Metrics Server — pinned to a specific commit hash
+# ============================================================
+echo "Cloning metrics server repository at pinned commit ${METRICS_SERVER_REPO_COMMIT}..."
+MAX_RETRIES=5
 RETRY_COUNT=0
 SUCCESS=false
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-  if git clone https://github.com/mialeevs/kubernetes_installation_crio.git; then
+  if git clone https://github.com/mialeevs/kubernetes_installation_crio.git "${TEMP_DIR}/metrics-server-repo"; then
     SUCCESS=true
     break
-  else
-    RETRY_COUNT=$((RETRY_COUNT + 1))
-    if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-      echo "Failed to clone repository (attempt $RETRY_COUNT/$MAX_RETRIES). Retrying in $((RETRY_COUNT * 5)) seconds..."
-      sleep $((RETRY_COUNT * 5))
-    fi
   fi
+  RETRY_COUNT=$((RETRY_COUNT + 1))
+  [ $RETRY_COUNT -lt $MAX_RETRIES ] && \
+    echo "Retrying clone ($RETRY_COUNT/$MAX_RETRIES)..." && \
+    sleep $((RETRY_COUNT * 5))
 done
 
 if [ "$SUCCESS" = false ]; then
@@ -165,29 +207,34 @@ if [ "$SUCCESS" = false ]; then
   exit 1
 fi
 
-cd kubernetes_installation_crio/
+# Checkout the pinned commit — prevents supply-chain attacks from future changes
+cd "${TEMP_DIR}/metrics-server-repo"
+git checkout "${METRICS_SERVER_REPO_COMMIT}"
 kubectl apply -f metrics-server.yaml
-cd
-rm -rf kubernetes_installation_crio/
+cd -
+rm -rf "${TEMP_DIR}/metrics-server-repo"
 
+# ============================================================
+# Install ArgoCD — pinned version manifest
+# ============================================================
 kubectl create namespace argocd || true
 
-# Download ArgoCD manifest with retry logic
-echo "Downloading ArgoCD manifest..."
+ARGOCD_MANIFEST_URL="https://raw.githubusercontent.com/argoproj/argo-cd/${ARGOCD_VERSION}/manifests/install.yaml"
+echo "Applying ArgoCD manifest from pinned version ${ARGOCD_VERSION}..."
+
+MAX_RETRIES=5
 RETRY_COUNT=0
 SUCCESS=false
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-  if kubectl apply -n argocd --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml; then
+  if kubectl apply -n argocd --server-side --force-conflicts -f "${ARGOCD_MANIFEST_URL}"; then
     SUCCESS=true
     break
-  else
-    RETRY_COUNT=$((RETRY_COUNT + 1))
-    if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-      echo "Failed to apply ArgoCD manifest (attempt $RETRY_COUNT/$MAX_RETRIES). Retrying in $((RETRY_COUNT * 5)) seconds..."
-      sleep $((RETRY_COUNT * 5))
-    fi
   fi
+  RETRY_COUNT=$((RETRY_COUNT + 1))
+  [ $RETRY_COUNT -lt $MAX_RETRIES ] && \
+    echo "Retrying ArgoCD manifest apply ($RETRY_COUNT/$MAX_RETRIES)..." && \
+    sleep $((RETRY_COUNT * 5))
 done
 
 if [ "$SUCCESS" = false ]; then
@@ -198,4 +245,3 @@ fi
 kubectl patch svc argocd-server -n argocd -p '{"spec":{"type":"NodePort"}}'
 kubectl patch svc argocd-server -n argocd --type='json' \
     -p='[{"op":"replace","path":"/spec/ports/0/nodePort","value":30903},{"op":"replace","path":"/spec/ports/1/nodePort","value":30904}]'
-
