@@ -43,7 +43,7 @@ This project supports two hypervisors. Pick one and follow the corresponding set
 
 | | VMware Workstation Pro | VirtualBox |
 |---|---|---|
-| **Branch** | `main` (this branch) | `virtualbox` branch |
+| **Branch** | `main` (Vmware_desktop) | `virtualbox` branch |
 | **Performance** | Better (especially on Windows) | Good, free |
 | **Vagrant plugin** | `vagrant-vmware-desktop` (paid) | Built-in provider |
 
