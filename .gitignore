@@ -1,25 +1,134 @@
-# Vagrant-specific ignores
-# Local Vagrant machine state (do NOT commit)
+# ============================================================================
+# Vagrant-specific files and directories
+# ============================================================================
 .vagrant/
-
-# Local box files
 *.box
-
-# Vagrant-created SSH private keys (sensitive)
 .vagrant/machines/*/virtualbox/private_key
 .vagrant/machines/*/libvirt/private_key
+.vagrant/machines/*/hyperv/private_key
+.vagrant/machines/*/vmware_desktop/private_key
 .vagrant/machines/*/docker/private_key
+*.vagrant
 
-# Common private certs/keys
+# ============================================================================
+# Kubernetes and Security-sensitive files
+# ============================================================================
+# Kubeconfig files (contain sensitive authentication tokens)
+config
+kubeconfig
+*.kubeconfig
+~/.kube/
+
+# Kubernetes secrets and manifests with sensitive data
+*-secret.yaml
+*-secret.yml
+*secret*.yaml
+*secret*.yml
+
+# Generated join commands and tokens
+join.sh
+
+# ============================================================================
+# SSH Keys and Certificates (NEVER commit private keys!)
+# ============================================================================
 *.pem
 *.key
+*.crt
+*.cert
+*.pub
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+ssh_config
 
-# Temporary files and logs created during provisioning
+# ============================================================================
+# Logs and temporary files
+# ============================================================================
 *.log
 tmp/
+temp/
+*.tmp
+*.backup
+*.swp
+*.swo
+*~
 
-# Optional: ignore IDE/editor project files (uncomment if desired)
-# .vscode/
-# .idea/
-# *.suo
-# *.user
+# ============================================================================
+# Environment and configuration files with sensitive data
+# ============================================================================
+.env
+.env.local
+.env.*.local
+.envrc
+
+# ============================================================================
+# IDE and Editor files
+# ============================================================================
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+*.sublime-project
+*.sublime-workspace
+.vim/
+.netrwhist
+
+# ============================================================================
+# OS-specific files
+# ============================================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ============================================================================
+# Docker/Container files
+# ============================================================================
+.dockerignore
+docker-compose.override.yml
+
+# ============================================================================
+# State and runtime files
+# ============================================================================
+*.state
+*.tfstate*
+.terraform/
+.vagrant.d/
+
+# ============================================================================
+# Node modules (if using Node.js tools)
+# ============================================================================
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# ============================================================================
+# Python cache and virtual environments
+# ============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.venv
+
+# ============================================================================
+# Misc
+# ============================================================================
+.classpath
+.project
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
