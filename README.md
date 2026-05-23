@@ -1,6 +1,6 @@
 # Kubernetes Cluster on Ubuntu 24.04 with Vagrant
 
-Automated Kubernetes cluster provisioning using Vagrant and VMware/VirtualBox. This project creates a production-ready Kubernetes cluster (v1.34) with CRI-O runtime, Calico networking, and configurable node count.
+Automated Kubernetes cluster provisioning using Vagrant and VirtualBox. This project creates a production-ready Kubernetes cluster (v1.34) with CRI-O runtime, Calico networking, and configurable node count.
 
 ## Table of Contents
 
@@ -18,11 +18,11 @@ Automated Kubernetes cluster provisioning using Vagrant and VMware/VirtualBox. T
 ## Features
 
 - **Kubernetes v1.34** with kubeadm initialization
-- **CRI-O v1.35** container runtime for improved performance
+- **CRI-O v1.34** container runtime for improved performance
 - **Calico v3.28.2** for network policy and pod networking
 - **Ubuntu 24.04 LTS** as base operating system
 - **Configurable cluster**: adjust node count, CPU, memory via `settings.yaml`
-- **Multi-hypervisor support**: VMware Desktop and VirtualBox
+- **Multi-hypervisor support**: VirtualBox
 - **Automated provisioning**: DNS, networking, swap management
 - **Robust error handling**: Retry logic for transient network issues
 - **Kubeconfig generation**: Auto-configured for immediate cluster access
@@ -32,24 +32,15 @@ Automated Kubernetes cluster provisioning using Vagrant and VMware/VirtualBox. T
 ### System Requirements
 
 - Windows 10/11 or Linux
-- **VMware Workstation Pro** OR **VirtualBox** (with Vagrant plugins)
+- **VirtualBox** 7.0+
 - **Vagrant** 2.3+, **Git**
 - Minimum 8GB RAM (16GB+ for multi-node cluster), 20GB disk space
 
 ### Installation
 
-**For VMware:**
-```powershell
-# 1. Install VMware Workstation Pro and Vagrant
-# 2. Install VMware utilities and Vagrant plugins
-vagrant plugin install vagrant-vmware-desktop
-vagrant plugin install vagrant-hostmanager
-```
-
-**For VirtualBox:**
 ```powershell
 # 1. Install VirtualBox and Vagrant
-# 2. Install Vagrant plugin
+# 2. Install Vagrant plugins
 vagrant plugin install vagrant-hostmanager
 ```
 
@@ -78,11 +69,6 @@ software:
 ### 3. Launch Cluster
 
 ```powershell
-# VMware (default)
-vagrant up
-
-# VirtualBox
-$env:VAGRANT_DEFAULT_PROVIDER = "virtualbox"
 vagrant up
 ```
 
@@ -108,7 +94,7 @@ Key configuration parameters:
 | `pod_cidr` | 10.244.0.0/16 | Pod network |
 | `service_cidr` | 10.96.0.0/12 | Service network |
 | `kubernetes` | v1.34 | Kubernetes version |
-| `crio` | v1.35 | CRI-O runtime version |
+| `crio` | v1.34 | CRI-O runtime version |
 | `calico` | 3.28.2 | Calico network plugin version |
 
 **Network Details:**

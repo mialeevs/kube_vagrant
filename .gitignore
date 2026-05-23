@@ -99,6 +99,64 @@ desktop.ini
 docker-compose.override.yml
 
 # ============================================================================
+# VirtualBox VM files
+# ============================================================================
+# VirtualBox machine definition files
+*.vbox
+*.vbox-prev
+
+# VirtualBox disk images
+*.vdi
+*.vmdk
+*.vhd
+*.vhdx
+*.hdd
+*.qcow2
+*.qcow
+*.img
+*.iso
+
+# VirtualBox snapshots and saved states
+*.sav
+*.ova
+*.ovf
+Snapshots/
+
+# VirtualBox logs
+*.vbox.log
+*.vbox.log.*
+Logs/
+
+# VirtualBox shared folder metadata
+.VirtualBox/
+
+# ============================================================================
+# VMware VM files
+# ============================================================================
+*.vmx
+*.vmxf
+*.nvram
+*.vmsd
+*.vmsn
+*.vmss
+*.vmem
+*.vmtm
+*.lck/
+
+# ============================================================================
+# Hyper-V VM files
+# ============================================================================
+*.avhd
+*.avhdx
+
+# ============================================================================
+# General virtual machine artifacts
+# ============================================================================
+# Large disk/memory files
+*.raw
+*.bin
+
+# ============================================================================
 # State and runtime files
 # ============================================================================
 *.state

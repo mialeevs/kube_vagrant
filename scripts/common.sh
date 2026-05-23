@@ -129,10 +129,11 @@ SUCCESS=false
 KUBE_KEY_TMP="/tmp/kubernetes-release.key"
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+  rm -f $KUBE_KEY_TMP /etc/apt/keyrings/kubernetes-apt-keyring.gpg
   # Download to temporary file first
-  if sudo curl -fsSL https://pkgs.k8s.io/core:/stable:/$KUBERNETES_VERSION/deb/Release.key -o $KUBE_KEY_TMP; then
+  if sudo curl -fsSL "https://pkgs.k8s.io/core:/stable:/$KUBERNETES_VERSION/deb/Release.key" -o $KUBE_KEY_TMP; then
     # Check if file is not empty and contains valid GPG data
-    if [ -s $KUBE_KEY_TMP ] && sudo gpg --with-colons $KUBE_KEY_TMP > /dev/null 2>&1 || grep -q "BEGIN PGP" $KUBE_KEY_TMP; then
+    if [ -s $KUBE_KEY_TMP ] && grep -q "BEGIN PGP" $KUBE_KEY_TMP; then
       # Process the key
       if sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg < $KUBE_KEY_TMP 2>/dev/null; then
         SUCCESS=true
@@ -140,7 +141,7 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
       fi
     fi
   fi
-  
+
   RETRY_COUNT=$((RETRY_COUNT + 1))
   if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
     echo "Failed to download/process Kubernetes GPG key (attempt $RETRY_COUNT/$MAX_RETRIES). Retrying in $((RETRY_COUNT * 5)) seconds..."
@@ -156,7 +157,7 @@ fi
 sudo rm -f $KUBE_KEY_TMP
 sudo chmod 644 /etc/apt/keyrings/kubernetes-apt-keyring.gpg # allow unprivileged APT programs to read this keyring
 
-sudo echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/$KUBERNETES_VERSION/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/$KUBERNETES_VERSION/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list
 
 # Update apt-get with retry logic for Kubernetes repository
 echo "Updating apt-get with Kubernetes repository..."
@@ -178,7 +179,8 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
 done
 
 if [ "$SUCCESS" = false ]; then
-  echo "WARNING: Failed to update apt-get after $MAX_RETRIES attempts, but continuing..."
+  echo "ERROR: Failed to update apt-get after $MAX_RETRIES attempts"
+  exit 1
 fi
 
 # Install Kubernetes packages with retry logic
@@ -226,7 +228,11 @@ if [ "$SUCCESS" = false ]; then
   echo "WARNING: Failed to install jq, but continuing..."
 fi
 
-local_ip="$(ip --json a s | jq -r '.[] | if .ifname == "eth1" then .addr_info[] | if .family == "inet" then .local else empty end else empty end')"
+local_ip="$(ip --json a s | jq -r '.[] | if .ifname == "eth1" or .ifname == "enp0s8" then .addr_info[] | if .family == "inet" then .local else empty end else empty end' | head -1)"
+if [ -z "$local_ip" ]; then
+  # Fallback: find the first non-NAT private IP (skip 10.0.2.x which is VirtualBox NAT)
+  local_ip="$(ip --json a s | jq -r '.[].addr_info[] | select(.family == "inet") | .local' | grep -v '^10\.0\.2\.' | head -1)"
+fi
 cat > /etc/default/kubelet << EOF
 KUBELET_EXTRA_ARGS=--node-ip=$local_ip
 ${ENVIRONMENT}

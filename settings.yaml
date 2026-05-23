@@ -19,9 +19,10 @@ nodes:
     ip_start: 192.168.100.20
 software:
   box: bento/ubuntu-24.04
+  box_version: "202510.26.0"
   calico: 3.28.2
   dashboard: 
   kubernetes: v1.34
-  os: xUbuntu_22.04
-  crio: v1.35
+  os: xUbuntu_24.04
+  crio: v1.34
 shared_folders: []

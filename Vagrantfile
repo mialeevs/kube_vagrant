@@ -27,16 +27,22 @@ Vagrant.configure("2") do |config|
 
   # Box configuration
   config.vm.box = settings["software"]["box"]
+  config.vm.box_version = settings["software"]["box_version"] if settings["software"]["box_version"]
   config.vm.box_check_update = true
 
-  # VMware provider default settings
-  config.vm.provider "vmware_desktop" do |vmw|
-    vmw.gui = false
-    vmw.linked_clone = true
-    vmw.vmx["ethernet0.connectionType"] = "nat"
-    # Ensure internet connectivity
-    vmw.vmx["ethernet0.present"] = "TRUE"
-    vmw.vmx["ethernet0.startConnected"] = "TRUE"
+  # Increase boot timeout for VirtualBox on Windows
+  config.vm.boot_timeout = 600
+
+  # VirtualBox provider default settings
+  config.vm.provider "virtualbox" do |vb|
+    vb.gui = false
+    vb.linked_clone = true
+    # KVM paravirtualization improves performance without touching NIC drivers
+    vb.customize ["modifyvm", :id, "--paravirtprovider", "kvm"]
+    # Regenerate MAC addresses on each clone to avoid collisions between nodes
+    vb.customize ["modifyvm", :id, "--macaddress1", "auto"]
+    # Sync host time to guest, tolerate up to 10s drift before forcing sync
+    vb.customize ["modifyvm", :id, "--rtcuseutc", "on"]
   end
 
   # Control Plane Node
@@ -51,9 +57,9 @@ Vagrant.configure("2") do |config|
       end
     end
 
-    control.vm.provider "vmware_desktop" do |vb|
-      vb.vmx["memsize"] = settings["nodes"]["control"]["memory"]
-      vb.vmx["numvcpus"] = settings["nodes"]["control"]["cpu"]
+    control.vm.provider "virtualbox" do |vb|
+      vb.memory = settings["nodes"]["control"]["memory"]
+      vb.cpus = settings["nodes"]["control"]["cpu"]
     end
 
     control.vm.provision "shell",
@@ -91,9 +97,9 @@ Vagrant.configure("2") do |config|
         end
       end
 
-      node.vm.provider "vmware_desktop" do |vb|
-        vb.vmx["memsize"] = settings["nodes"]["workers"]["memory"]
-        vb.vmx["numvcpus"] = settings["nodes"]["workers"]["cpu"]
+      node.vm.provider "virtualbox" do |vb|
+        vb.memory = settings["nodes"]["workers"]["memory"]
+        vb.cpus = settings["nodes"]["workers"]["cpu"]
       end
 
       node.vm.provision "shell",
