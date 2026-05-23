@@ -1,198 +1,233 @@
-#!/usr/bin/env bash
+#!/bin/bash
+#
+# Common setup for all servers (Control Plane and Nodes)
 
 set -euxo pipefail
 
-SETUP_LOG=${SETUP_LOG:-"/var/log/k8s-setup.log"}
-TEMP_DIR=$(mktemp -d)
-trap 'rm -rf "${TEMP_DIR}"' EXIT
-
-error_handler() {
-    local exit_code=$1
-    local line_number=$2
-    echo "[ERROR] $(date '+%Y-%m-%d %H:%M:%S') - Error on line ${line_number}: Command exited with status ${exit_code}" | 
-        tee -a "${SETUP_LOG}"
-    exit "${exit_code}"
-}
-trap 'error_handler $? $LINENO' ERR
-
-log() {
-    local level=$1
-    shift
-    echo "[${level}] $(date '+%Y-%m-%d %H:%M:%S') - $*" | tee -a "${SETUP_LOG}"
-}
-
-if [ "$(id -u)" -ne 0 ] && ! sudo -n true 2>/dev/null; then
-    log "ERROR" "This script must be run with root privileges"
-    exit 1
-fi
-
-required_vars=("DNS_SERVERS" "KUBERNETES_VERSION" "CRIO_VERSION" "OS")
-
-for var in "${required_vars[@]}"; do
-    if [ -z "${!var:-}" ]; then
-        log "ERROR" "$var is not set"
-        exit 1
-    fi
+# Wait for DNS to be ready
+echo "Waiting for DNS resolution to be available..."
+for i in {1..30}; do
+  if nslookup 8.8.8.8 > /dev/null 2>&1; then
+    echo "DNS is ready"
+    break
+  fi
+  if [ $i -eq 30 ]; then
+    echo "Warning: DNS not responding after 30 attempts, continuing anyway..."
+  fi
+  sleep 1
 done
 
-disable_swap() {
-    sudo swapoff -a
-    (crontab -l 2>/dev/null; echo "@reboot /sbin/swapoff -a") | crontab - || true
-}
+# Allow system to stabilize after boot
+echo "Waiting for system to stabilize..."
+sleep 15
 
-configure_dns() {
-    log "INFO" "Configuring DNS settings..."
-    
-    # Disable IPv6 to avoid connectivity issues
-    echo 'net.ipv6.conf.all.disable_ipv6 = 1' | sudo tee -a /etc/sysctl.conf
-    echo 'net.ipv6.conf.default.disable_ipv6 = 1' | sudo tee -a /etc/sysctl.conf
-    sysctl -p
-    
-    # Configure systemd-resolved
-    mkdir -p /etc/systemd/resolved.conf.d/
-    cat <<EOF | sudo tee /etc/systemd/resolved.conf.d/dns_servers.conf
+# Variable Declaration
+export DNS_SERVERS
+export KUBERNETES_VERSION
+export CRIO_VERSION
+export ENVIRONMENT
+export OS
+
+# DNS Setting
+if [ ! -d /etc/systemd/resolved.conf.d ]; then
+	sudo mkdir /etc/systemd/resolved.conf.d/
+fi
+cat <<EOF | sudo tee /etc/systemd/resolved.conf.d/dns_servers.conf
 [Resolve]
 DNS=${DNS_SERVERS}
-DNSStubListener=no
-FallbackDNS=8.8.8.8 8.8.4.4
 EOF
 
-    # Also configure /etc/resolv.conf as backup
-    cat <<EOF | sudo tee /etc/resolv.conf
-nameserver 9.9.9.9
-nameserver 1.1.1.1
-nameserver 8.8.8.8
-EOF
+sudo systemctl restart systemd-resolved
 
-    systemctl restart systemd-resolved
-    
-    # Wait a moment for DNS to be ready
-    sleep 2
-    
-    # Verify DNS resolution
-    for i in {1..5}; do
-        if nslookup pkgs.k8s.io >/dev/null 2>&1; then
-            log "INFO" "DNS resolution verified successfully"
-            return 0
-        fi
-        log "WARN" "DNS resolution attempt $i failed. Retrying..."
-        sleep 2
-    done
-    
-    log "ERROR" "DNS resolution verification failed after 5 attempts"
-    exit 1
-}
+# disable swap
+sudo swapoff -a
 
-container_runtime_setup() {
-    log "INFO" "Setting up container runtime prerequisites..."
-    
-    cat <<EOF | sudo tee /etc/modules-load.d/crio.conf
+# keeps the swap off during reboot
+(crontab -l 2>/dev/null; echo "@reboot /sbin/swapoff -a") | crontab - || true
+sudo apt-get update -y
+# Install CRI-O Runtime
+
+VERSION="$(echo ${KUBERNETES_VERSION} | grep -oE '[0-9]+\.[0-9]+')"
+
+# Create the .conf file to load the modules at bootup
+cat <<EOF | sudo tee /etc/modules-load.d/crio.conf
 overlay
 br_netfilter
 EOF
 
-    for module in overlay br_netfilter; do
-        if ! lsmod | grep -q "^$module"; then
-            log "INFO" "Loading kernel module: $module"
-            modprobe "$module"
-        fi
-    done
+sudo modprobe overlay
+sudo modprobe br_netfilter
 
-    cat <<EOF | sudo tee /etc/sysctl.d/99-kubernetes-cri.conf
-net.bridge.bridge-nf-call-iptables = 1
+# Set up required sysctl params, these persist across reboots.
+cat <<EOF | sudo tee /etc/sysctl.d/99-kubernetes-cri.conf
+net.bridge.bridge-nf-call-iptables  = 1
+net.ipv4.ip_forward                 = 1
 net.bridge.bridge-nf-call-ip6tables = 1
-net.ipv4.ip_forward = 1
-EOF
-    sysctl --system
-}
-
-install_crio() {
-    log "INFO" "Installing CRI-O version ${CRIO_VERSION}..."
-    
-    sudo mkdir -p /etc/apt/keyrings
-    curl -fsSL "https://pkgs.k8s.io/addons:/cri-o:/stable:/${CRIO_VERSION}/deb/Release.key" | \
-        sudo gpg --dearmor -o /etc/apt/keyrings/cri-o-apt-keyring.gpg
-
-    echo "deb [signed-by=/etc/apt/keyrings/cri-o-apt-keyring.gpg] https://pkgs.k8s.io/addons:/cri-o:/stable:/${CRIO_VERSION}/deb/ /" | \
-        sudo tee /etc/apt/sources.list.d/cri-o.list
-
-    for i in {1..3}; do
-        if apt-get update && apt-get install -y cri-o; then
-            log "INFO" "Successfully installed CRI-O"
-            break
-        fi
-        if [ $i -eq 3 ]; then
-            log "ERROR" "Failed to install CRI-O after 3 attempts"
-            exit 1
-        fi
-        log "WARN" "CRI-O installation attempt $i failed. Retrying..."
-        sleep 5
-    done
-
-    mkdir -p /etc/crio/crio.conf.d/
-    cat <<EOF | sudo tee /etc/crio/crio.conf.d/02-crio.conf
-[crio.runtime]
-conmon_cgroup = "pod"
-cgroup_manager = "systemd"
-
-[crio.image]
-pause_image = "registry.k8s.io/pause:3.10"
-
-[crio.network]
-network_dir = "/etc/cni/net.d/"
-plugin_dirs = ["/opt/cni/bin"]
 EOF
 
-    systemctl daemon-reload
-    systemctl enable --now crio
-    
-    if ! systemctl is-active --quiet crio; then
-        log "ERROR" "CRI-O service failed to start"
-        systemctl status crio
-        exit 1
+sudo sysctl --system
+
+sudo mkdir -p /etc/apt/keyrings
+
+# Download CRI-O GPG key with retry logic
+echo "Downloading CRI-O GPG key..."
+MAX_RETRIES=5
+RETRY_COUNT=0
+SUCCESS=false
+CRIO_KEY_TMP="/tmp/crio-release.key"
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+  # Download to temporary file first
+  if curl -fsSL "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/$CRIO_VERSION/deb/Release.key" -o $CRIO_KEY_TMP; then
+    # Check if file is not empty and contains valid GPG data
+    if [ -s $CRIO_KEY_TMP ] && grep -q "BEGIN PGP" $CRIO_KEY_TMP; then
+      # Process the key
+      if sudo gpg --dearmor -o /etc/apt/keyrings/cri-o-apt-keyring.gpg < $CRIO_KEY_TMP 2>/dev/null; then
+        SUCCESS=true
+        break
+      fi
     fi
-    
-    log "INFO" "CRI-O installation completed"
-}
+  fi
+  
+  RETRY_COUNT=$((RETRY_COUNT + 1))
+  if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+    echo "Failed to download/process CRI-O GPG key (attempt $RETRY_COUNT/$MAX_RETRIES). Retrying in $((RETRY_COUNT * 5)) seconds..."
+    sleep $((RETRY_COUNT * 5))
+  fi
+done
 
-install_kubernetes() {
-    log "INFO" "Installing Kubernetes version ${KUBERNETES_VERSION}..."
+if [ "$SUCCESS" = false ]; then
+  echo "ERROR: Failed to download CRI-O GPG key after $MAX_RETRIES attempts"
+  exit 1
+fi
 
-    curl -fsSL "https://pkgs.k8s.io/core:/stable:/${KUBERNETES_VERSION}/deb/Release.key" | \
-        sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-    
-    sudo chmod 644 /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+rm -f $CRIO_KEY_TMP
 
-    echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/${KUBERNETES_VERSION}/deb/ /" | \
-        sudo tee /etc/apt/sources.list.d/kubernetes.list
+echo "deb [signed-by=/etc/apt/keyrings/cri-o-apt-keyring.gpg] https://download.opensuse.org/repositories/isv:/cri-o:/stable:/$CRIO_VERSION/deb/ /" \
+  | sudo tee /etc/apt/sources.list.d/cri-o.list
 
-    apt-get update
-    apt-get install -y kubelet kubeadm kubectl jq
-    apt-mark hold kubelet kubeadm kubectl
+sudo apt-get update -y
+sudo apt-get install cri-o -y
 
-    local_ip=$(ip -4 addr show eth1 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
-    
-    if [ -z "$local_ip" ]; then
-        log "ERROR" "Could not detect local IP address"
-        exit 1
+cat >> /etc/default/crio << EOF
+${ENVIRONMENT}
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable crio --now
+
+echo "CRI runtime installed successfully"
+
+sudo apt-get update -y
+
+sudo apt-get install -y apt-transport-https ca-certificates curl gpg
+
+# Download Kubernetes GPG key with retry logic
+echo "Downloading Kubernetes GPG key..."
+MAX_RETRIES=5
+RETRY_COUNT=0
+SUCCESS=false
+KUBE_KEY_TMP="/tmp/kubernetes-release.key"
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+  # Download to temporary file first
+  if sudo curl -fsSL https://pkgs.k8s.io/core:/stable:/$KUBERNETES_VERSION/deb/Release.key -o $KUBE_KEY_TMP; then
+    # Check if file is not empty and contains valid GPG data
+    if [ -s $KUBE_KEY_TMP ] && sudo gpg --with-colons $KUBE_KEY_TMP > /dev/null 2>&1 || grep -q "BEGIN PGP" $KUBE_KEY_TMP; then
+      # Process the key
+      if sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg < $KUBE_KEY_TMP 2>/dev/null; then
+        SUCCESS=true
+        break
+      fi
     fi
+  fi
+  
+  RETRY_COUNT=$((RETRY_COUNT + 1))
+  if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+    echo "Failed to download/process Kubernetes GPG key (attempt $RETRY_COUNT/$MAX_RETRIES). Retrying in $((RETRY_COUNT * 5)) seconds..."
+    sleep $((RETRY_COUNT * 5))
+  fi
+done
 
-    mkdir -p /etc/default
-    cat <<EOF | sudo tee /etc/default/kubelet
+if [ "$SUCCESS" = false ]; then
+  echo "ERROR: Failed to download Kubernetes GPG key after $MAX_RETRIES attempts"
+  exit 1
+fi
+
+sudo rm -f $KUBE_KEY_TMP
+sudo chmod 644 /etc/apt/keyrings/kubernetes-apt-keyring.gpg # allow unprivileged APT programs to read this keyring
+
+sudo echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/$KUBERNETES_VERSION/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+# Update apt-get with retry logic for Kubernetes repository
+echo "Updating apt-get with Kubernetes repository..."
+MAX_RETRIES=5
+RETRY_COUNT=0
+SUCCESS=false
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+  if sudo apt-get update -y; then
+    SUCCESS=true
+    break
+  else
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+      echo "Failed to update apt-get (attempt $RETRY_COUNT/$MAX_RETRIES). Retrying in $((RETRY_COUNT * 10)) seconds..."
+      sleep $((RETRY_COUNT * 10))
+    fi
+  fi
+done
+
+if [ "$SUCCESS" = false ]; then
+  echo "WARNING: Failed to update apt-get after $MAX_RETRIES attempts, but continuing..."
+fi
+
+# Install Kubernetes packages with retry logic
+echo "Installing Kubernetes packages..."
+RETRY_COUNT=0
+SUCCESS=false
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+  if sudo apt-get install -y kubelet kubeadm kubectl; then
+    SUCCESS=true
+    break
+  else
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+      echo "Failed to install Kubernetes packages (attempt $RETRY_COUNT/$MAX_RETRIES). Retrying in $((RETRY_COUNT * 10)) seconds..."
+      sleep $((RETRY_COUNT * 10))
+    fi
+  fi
+done
+
+if [ "$SUCCESS" = false ]; then
+  echo "ERROR: Failed to install Kubernetes packages after $MAX_RETRIES attempts"
+  exit 1
+fi
+
+# Install jq with retry logic
+echo "Installing jq..."
+RETRY_COUNT=0
+SUCCESS=false
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+  if sudo apt-get install -y jq; then
+    SUCCESS=true
+    break
+  else
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+      echo "Failed to install jq (attempt $RETRY_COUNT/$MAX_RETRIES). Retrying in $((RETRY_COUNT * 10)) seconds..."
+      sleep $((RETRY_COUNT * 10))
+    fi
+  fi
+done
+
+if [ "$SUCCESS" = false ]; then
+  echo "WARNING: Failed to install jq, but continuing..."
+fi
+
+local_ip="$(ip --json a s | jq -r '.[] | if .ifname == "eth1" then .addr_info[] | if .family == "inet" then .local else empty end else empty end')"
+cat > /etc/default/kubelet << EOF
 KUBELET_EXTRA_ARGS=--node-ip=$local_ip
+${ENVIRONMENT}
 EOF
-}
-
-main() {
-    log "INFO" "Starting Kubernetes node setup..."
-    
-    configure_dns
-    disable_swap
-    container_runtime_setup
-    install_crio
-    install_kubernetes
-    
-    log "INFO" "Kubernetes node setup completed successfully"
-}
-
-main "$@"

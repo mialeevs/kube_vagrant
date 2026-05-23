@@ -1,177 +1,201 @@
-#!/usr/bin/env bash
+#!/bin/bash
+#
+# Setup for Control Plane (Master) servers
 
 set -euxo pipefail
 
-# Global variables
-SETUP_LOG=${SETUP_LOG:-"/var/log/k8s-control-setup.log"}
-TEMP_DIR=$(mktemp -d)
-trap 'rm -rf "${TEMP_DIR}"' EXIT
+TEMP_DIR="/tmp"
 
-log() {
-   local level="$1"
-   shift
-   echo "[$(date +'%Y-%m-%d %H:%M:%S')] [${level}] $*" | tee -a "${SETUP_LOG}"
-}
+export CALICO_VERSION
+export CRIO_VERSION
+export CONTROL_IP
+export POD_CIDR
+export SERVICE_CIDR
 
-error_handler() {
-   local exit_code=$1
-   local line_number=$2
-   log "ERROR" "Error on line ${line_number}: Command exited with status ${exit_code}"
-   cleanup_on_failure
-   exit "${exit_code}"
-}
-trap 'error_handler $? $LINENO' ERR
+NODENAME=$(hostname -s)
 
-cleanup_on_failure() {
-   log "INFO" "Performing cleanup after failure..."
-   kubeadm reset -f || true
-   rm -rf /etc/cni/net.d/*
-   iptables -F && iptables -t nat -F
-}
+# Network connectivity check
+echo "Testing network connectivity..."
+ping -c 3 8.8.8.8 || echo "Warning: Cannot reach 8.8.8.8"
+nslookup registry.k8s.io || echo "Warning: DNS resolution failed for registry.k8s.io"
 
-wait_for_apiserver() {
-   log "INFO" "Waiting for API server to be ready..."
-   local timeout=180
-   local interval=5
-   local elapsed=0
+# Configure alternative registry if needed
+# Try primary registry first
+echo "Trying primary registry..."
+if sudo kubeadm config images pull --image-repository=registry.k8s.io; then
+  echo "Primary registry worked!"
+else
+  echo "Primary registry failed, trying alternative approach..."
+  
+  # Get the list of required images
+  echo "Getting list of required images..."
+  sudo kubeadm config images list
+  
+  # Try pulling images individually with fallback
+  echo "Pulling images individually..."
+  
+  # Most images work from k8s.gcr.io
+  sudo crio pull k8s.gcr.io/kube-apiserver:v1.34.5 || echo "Failed to pull kube-apiserver"
+  sudo crio pull k8s.gcr.io/kube-controller-manager:v1.34.5 || echo "Failed to pull kube-controller-manager"
+  sudo crio pull k8s.gcr.io/kube-scheduler:v1.34.5 || echo "Failed to pull kube-scheduler"
+  sudo crio pull k8s.gcr.io/kube-proxy:v1.34.5 || echo "Failed to pull kube-proxy"
+  sudo crio pull k8s.gcr.io/pause:3.10 || echo "Failed to pull pause"
+  sudo crio pull k8s.gcr.io/etcd:3.5.15-0 || echo "Failed to pull etcd"
+  
+  # CoreDNS needs special handling
+  sudo crio pull registry.k8s.io/coredns/coredns:v1.12.1 || sudo crio pull coredns/coredns:1.12.1 || echo "Failed to pull coredns"
+  
+  echo "Individual image pulls completed"
+fi
 
-   while [ $elapsed -lt $timeout ]; do
-       if kubectl get nodes &>/dev/null; then
-           log "INFO" "API server is ready"
-           return 0
-       fi
-       log "INFO" "Waiting for API server... ($elapsed/$timeout seconds)"
-       sleep $interval
-       elapsed=$((elapsed + interval))
-   done
+echo "Preflight Check Passed: Downloaded All Required Images"
 
-   log "ERROR" "Timeout waiting for API server"
-   return 1
-}
+sudo kubeadm init --apiserver-advertise-address=$CONTROL_IP --apiserver-cert-extra-sans=$CONTROL_IP --pod-network-cidr=$POD_CIDR --service-cidr=$SERVICE_CIDR --node-name "$NODENAME" --ignore-preflight-errors Swap
 
-wait_for_pods() {
-   local namespace=$1
-   local label=$2
-   local timeout=300
-   local interval=10
-   local elapsed=0
+mkdir -p "$HOME"/.kube
+sudo cp -i /etc/kubernetes/admin.conf "$HOME"/.kube/config
+sudo chown "$(id -u)":"$(id -g)" "$HOME"/.kube/config
 
-   log "INFO" "Waiting for pods with label $label in namespace $namespace..."
+# Save Configs to shared /Vagrant location
 
-   while [ $elapsed -lt $timeout ]; do
-       if kubectl get pods -n "$namespace" -l "$label" 2>/dev/null | grep -q "Running"; then
-           local ready_pods=$(kubectl get pods -n "$namespace" -l "$label" -o jsonpath='{.items[*].status.containerStatuses[*].ready}' | grep -o "true" | wc -l)
-           local total_pods=$(kubectl get pods -n "$namespace" -l "$label" --no-headers | wc -l)
+# For Vagrant re-runs, check if there is existing configs in the location and delete it for saving new configuration.
 
-           if [ "$ready_pods" -eq "$total_pods" ] && [ "$total_pods" -gt 0 ]; then
-               log "INFO" "All pods are ready ($ready_pods/$total_pods)"
-               return 0
-           fi
-       fi
+config_path="/vagrant/configs"
 
-       log "INFO" "Waiting for pods to be ready... ($elapsed/$timeout seconds)"
-       sleep $interval
-       elapsed=$((elapsed + interval))
-   done
+if [ -d $config_path ]; then
+  rm -f $config_path/*
+else
+  mkdir -p $config_path
+fi
 
-   log "ERROR" "Timeout waiting for pods"
-   kubectl get pods -n "$namespace" -l "$label" -o wide
-   return 1
-}
+cp -i /etc/kubernetes/admin.conf $config_path/config
+touch $config_path/join.sh
+chmod +x $config_path/join.sh
 
-initialize_control_plane() {
-   log "INFO" "Initializing control plane..."
+kubeadm token create --print-join-command > $config_path/join.sh
 
-   cat <<EOF > "$TEMP_DIR/kubeadm-config.yaml"
-apiVersion: kubeadm.k8s.io/v1beta4
-kind: InitConfiguration
-localAPIEndpoint:
- advertiseAddress: "${CONTROL_IP}"
- bindPort: 6443
-nodeRegistration:
- criSocket: "unix:///var/run/crio/crio.sock"
- imagePullPolicy: IfNotPresent
----
-apiVersion: kubeadm.k8s.io/v1beta4
-kind: ClusterConfiguration
-networking:
- serviceSubnet: "${SERVICE_CIDR}"
- podSubnet: "${POD_CIDR}"
- dnsDomain: "cluster.local"
-apiServer:
- extraArgs:
-   authorization-mode: "Node,RBAC"
-   enable-admission-plugins: "NodeRestriction"
-controllerManager:
- extraArgs:
-   bind-address: "0.0.0.0"
-scheduler:
- extraArgs:
-   bind-address: "0.0.0.0"
+# Install Calico Network Plugin
+
+# Download Calico manifest with retry logic
+echo "Downloading Calico manifest..."
+MAX_RETRIES=5
+RETRY_COUNT=0
+SUCCESS=false
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+  if curl -fsSL https://raw.githubusercontent.com/projectcalico/calico/v${CALICO_VERSION}/manifests/calico.yaml -O; then
+    SUCCESS=true
+    break
+  else
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+      echo "Failed to download Calico manifest (attempt $RETRY_COUNT/$MAX_RETRIES). Retrying in $((RETRY_COUNT * 5)) seconds..."
+      sleep $((RETRY_COUNT * 5))
+    fi
+  fi
+done
+
+if [ "$SUCCESS" = false ]; then
+  echo "ERROR: Failed to download Calico manifest after $MAX_RETRIES attempts"
+  exit 1
+fi
+
+kubectl apply -f calico.yaml
+
+# Install helm (required for cilium)
+sudo apt-get install curl gpg apt-transport-https --yes
+
+curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-4
+chmod 700 get_helm.sh
+./get_helm.sh
+
+# Download ArgoCD CLI with retry logic
+echo "Downloading ArgoCD CLI..."
+RETRY_COUNT=0
+SUCCESS=false
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+  if wget -q https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64 -O "${TEMP_DIR}/argocd"; then
+    SUCCESS=true
+    break
+  else
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+      echo "Failed to download ArgoCD CLI (attempt $RETRY_COUNT/$MAX_RETRIES). Retrying in $((RETRY_COUNT * 5)) seconds..."
+      sleep $((RETRY_COUNT * 5))
+    fi
+  fi
+done
+
+if [ "$SUCCESS" = false ]; then
+  echo "ERROR: Failed to download ArgoCD CLI after $MAX_RETRIES attempts"
+  exit 1
+fi
+
+sudo install -m 755 "${TEMP_DIR}/argocd" /usr/local/bin/argocd
+rm "${TEMP_DIR}/argocd"
+
+sudo -i -u vagrant bash << EOF
+whoami
+mkdir -p /home/vagrant/.kube
+sudo cp -i $config_path/config /home/vagrant/.kube/
+sudo chown 1000:1000 /home/vagrant/.kube/config
 EOF
 
-   kubeadm config images pull --config "$TEMP_DIR/kubeadm-config.yaml"
-   kubeadm init --config "$TEMP_DIR/kubeadm-config.yaml" --upload-certs
+# Install Metrics Server with retry logic
+echo "Cloning metrics server repository..."
+RETRY_COUNT=0
+SUCCESS=false
 
-   mkdir -p /home/vagrant/.kube
-   cp -i /etc/kubernetes/admin.conf /home/vagrant/.kube/config
-   chown -R vagrant:vagrant /home/vagrant/.kube
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+  if git clone https://github.com/mialeevs/kubernetes_installation_crio.git; then
+    SUCCESS=true
+    break
+  else
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+      echo "Failed to clone repository (attempt $RETRY_COUNT/$MAX_RETRIES). Retrying in $((RETRY_COUNT * 5)) seconds..."
+      sleep $((RETRY_COUNT * 5))
+    fi
+  fi
+done
 
-   export KUBECONFIG=/etc/kubernetes/admin.conf
+if [ "$SUCCESS" = false ]; then
+  echo "ERROR: Failed to clone metrics server repository after $MAX_RETRIES attempts"
+  exit 1
+fi
 
-   wait_for_apiserver
+cd kubernetes_installation_crio/
+kubectl apply -f metrics-server.yaml
+cd
+rm -rf kubernetes_installation_crio/
 
-   sleep 5
-   sudo apt-get install bash-completion -y
-   echo "source <(kubectl completion bash)" >> ~/.bashrc
-   echo "complete -F __start_kubectl k" >> ~/.bashrc
-   echo "alias k=kubectl" >> ~/.bashrc
-   echo "alias c=clear" >> ~/.bashrc
-   echo "alias ud='sudo apt update -y && sudo apt upgrade -y'" >> ~/.bashrc
+kubectl create namespace argocd || true
 
-   # Configure Calico IP autodetection
-   cat <<EOF > "$TEMP_DIR/calico-config.yaml"
-apiVersion: v1
-kind: ConfigMap
-metadata:
- name: calico-config
- namespace: kube-system
-data:
- calico_backend: "bird"
- veth_mtu: "1440"
- ip_autodetection_method: "interface=eth0"
-EOF
+# Download ArgoCD manifest with retry logic
+echo "Downloading ArgoCD manifest..."
+RETRY_COUNT=0
+SUCCESS=false
 
-   kubectl apply -f "$TEMP_DIR/calico-config.yaml"
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+  if kubectl apply -n argocd --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml; then
+    SUCCESS=true
+    break
+  else
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+      echo "Failed to apply ArgoCD manifest (attempt $RETRY_COUNT/$MAX_RETRIES). Retrying in $((RETRY_COUNT * 5)) seconds..."
+      sleep $((RETRY_COUNT * 5))
+    fi
+  fi
+done
 
-   log "INFO" "Downloading Calico manifest..."
-   curl -L https://raw.githubusercontent.com/projectcalico/calico/v${CALICO_VERSION}/manifests/calico.yaml \
-       -o "$TEMP_DIR/calico.yaml"
+if [ "$SUCCESS" = false ]; then
+  echo "ERROR: Failed to apply ArgoCD manifest after $MAX_RETRIES attempts"
+  exit 1
+fi
 
-   sed -i "s#192.168.0.0/16#${POD_CIDR}#g" "$TEMP_DIR/calico.yaml"
-   sed -i '/name: CALICO_IPV4POOL_CIDR/a\            - name: IP_AUTODETECTION_METHOD\n              value: "interface=eth0"' "$TEMP_DIR/calico.yaml"
+kubectl patch svc argocd-server -n argocd -p '{"spec":{"type":"NodePort"}}'
+kubectl patch svc argocd-server -n argocd --type='json' \
+    -p='[{"op":"replace","path":"/spec/ports/0/nodePort","value":30903},{"op":"replace","path":"/spec/ports/1/nodePort","value":30904}]'
 
-   log "INFO" "Applying Calico manifest..."
-   kubectl apply -f "$TEMP_DIR/calico.yaml"
-
-   log "INFO" "Waiting for CoreDNS to be ready..."
-   wait_for_pods "kube-system" "k8s-app=kube-dns"
-
-   log "INFO" "Waiting for Calico to be ready..."
-   wait_for_pods "kube-system" "k8s-app=calico-node"
-
-   log "INFO" "Verifying cluster status..."
-   kubectl get nodes -o wide
-   kubectl get pods --all-namespaces
-
-   kubeadm token create --print-join-command > /vagrant/configs/join.sh
-   chmod +x /vagrant/configs/join.sh
-}
-
-main() {
-   log "INFO" "Starting control plane setup..."
-   initialize_control_plane
-   log "INFO" "Control plane setup completed successfully"
-}
-
-main "$@"

@@ -1,89 +1,134 @@
-# OS-specific
-.DS_Store
+# ============================================================================
+# Vagrant-specific files and directories
+# ============================================================================
+.vagrant/
+*.box
+.vagrant/machines/*/virtualbox/private_key
+.vagrant/machines/*/libvirt/private_key
+.vagrant/machines/*/hyperv/private_key
+.vagrant/machines/*/vmware_desktop/private_key
+.vagrant/machines/*/docker/private_key
+*.vagrant
 
-# Editor swapfiles
-.*.sw?
+# ============================================================================
+# Kubernetes and Security-sensitive files
+# ============================================================================
+# Kubeconfig files (contain sensitive authentication tokens)
+config
+kubeconfig
+*.kubeconfig
+~/.kube/
+
+# Kubernetes secrets and manifests with sensitive data
+*-secret.yaml
+*-secret.yml
+*secret*.yaml
+*secret*.yml
+
+# Generated join commands and tokens
+join.sh
+
+# ============================================================================
+# SSH Keys and Certificates (NEVER commit private keys!)
+# ============================================================================
+*.pem
+*.key
+*.crt
+*.cert
+*.pub
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+ssh_config
+
+# ============================================================================
+# Logs and temporary files
+# ============================================================================
+*.log
+tmp/
+temp/
+*.tmp
+*.backup
+*.swp
+*.swo
 *~
 
-# Vagrant stuff
-acceptance_config.yml
-boxes/*
-/.vagrant
-/website/.vagrant
-/website/build
-/vagrant-spec.config.rb
-test/vagrant-spec/.vagrant/
-.vagrant/
-/vagrant
-/pkg
-data.db
-vagrant-restore.db.lock
-cmd/vagrant/Vagrantfile
-binstubs/
+# ============================================================================
+# Environment and configuration files with sensitive data
+# ============================================================================
+.env
+.env.local
+.env.*.local
+.envrc
 
-# Bundler/Rubygems
-*.gem
-.bundle
-pkg/*
-/Gemfile.lock
-test/tmp/
-/exec
-.ruby-bundle
-vendor/bundle
+# ============================================================================
+# IDE and Editor files
+# ============================================================================
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+*.sublime-project
+*.sublime-workspace
+.vim/
+.netrwhist
 
-# Documentation
-_site/*
-.yardoc/
-doc/
+# ============================================================================
+# OS-specific files
+# ============================================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
 
-# Python
-*.pyc
+# ============================================================================
+# Docker/Container files
+# ============================================================================
+.dockerignore
+docker-compose.override.yml
 
-# Rubinius
-*.rbc
+# ============================================================================
+# State and runtime files
+# ============================================================================
+*.state
+*.tfstate*
+.terraform/
+.vagrant.d/
 
-# IDE junk
-.idea/*
-*.iml
+# ============================================================================
+# Node modules (if using Node.js tools)
+# ============================================================================
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# ============================================================================
+# Python cache and virtual environments
+# ============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.venv
+
+# ============================================================================
+# Misc
+# ============================================================================
+.classpath
 .project
-.vscode
-
-# Ruby Managers
-.rbenv
-.rbenv-gemsets
-.ruby-gemset
-.ruby-version
-.rvmrc
-
-# Box storage for spec
-test/vagrant-spec/boxes/*.box
-
-simple_speed.py
-cover.out
-
-# nektos/act secrets file
-.secrets
-
-# delve debug binary
-__debug_bin
-
-# solargraph (ruby lsp) & rubocop
-.solargraph.yml
-.rubocop.yml
-
-# Ignore generated binaries
-bin/vagrant-go*
-
-# extension
-tmp*
-lib/vagrant/vagrant_ssl.so
-
-# direnv directory
-.direnv
-
-# configs directory
-configs/*
-
-
-# VDI Files
-*.vdi
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
