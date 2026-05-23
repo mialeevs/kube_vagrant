@@ -13,7 +13,7 @@ nodes:
     memory: 6144
     ip: 192.168.100.10
   workers:
-    count: 2
+    count: 1
     cpu: 2
     memory: 6144
     ip_start: 192.168.100.20
@@ -24,6 +24,6 @@ software:
   kubernetes: v1.34
   os: xUbuntu_22.04
   crio: v1.35
-  helm: v3.17.3
-  argocd: v3.2.0
+  helm: v4.2.0
+  argocd: v3.4.2
 shared_folders: []

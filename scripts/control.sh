@@ -14,10 +14,9 @@ export SERVICE_CIDR
 export HELM_VERSION
 export ARGOCD_VERSION
 
-# Pinned commit hash for the metrics-server manifest repo.
-# To update: check https://github.com/mialeevs/kubernetes_installation_crio
-# and set this to the latest reviewed commit SHA.
-METRICS_SERVER_REPO_COMMIT="f9b6702f8f7f3d9e1e1e2e3e4e5e6e7e8e9e0e1"
+# Resolve the latest commit hash from the metrics-server manifest repo at runtime.
+# This ensures we always use the most recent version without hardcoding a SHA.
+METRICS_SERVER_REPO_COMMIT=$(git ls-remote https://github.com/mialeevs/kubernetes_installation_crio.git HEAD | awk '{print $1}')
 
 NODENAME=$(hostname -s)
 
@@ -26,23 +25,17 @@ echo "Testing network connectivity..."
 ping -c 3 8.8.8.8 || echo "Warning: Cannot reach 8.8.8.8"
 nslookup registry.k8s.io || echo "Warning: DNS resolution failed for registry.k8s.io"
 
-# Configure alternative registry if needed
-# Try primary registry first
-echo "Trying primary registry..."
+# Pull all required images — let kubeadm resolve the correct versions dynamically
+echo "Pulling required Kubernetes images..."
 if sudo kubeadm config images pull --image-repository=registry.k8s.io; then
-  echo "Primary registry worked!"
+  echo "All images pulled via primary registry."
 else
-  echo "Primary registry failed, trying alternative approach..."
-  sudo kubeadm config images list
-  echo "Pulling images individually..."
-  sudo crio pull k8s.gcr.io/kube-apiserver:v1.34.5 || echo "Failed to pull kube-apiserver"
-  sudo crio pull k8s.gcr.io/kube-controller-manager:v1.34.5 || echo "Failed to pull kube-controller-manager"
-  sudo crio pull k8s.gcr.io/kube-scheduler:v1.34.5 || echo "Failed to pull kube-scheduler"
-  sudo crio pull k8s.gcr.io/kube-proxy:v1.34.5 || echo "Failed to pull kube-proxy"
-  sudo crio pull k8s.gcr.io/pause:3.10 || echo "Failed to pull pause"
-  sudo crio pull k8s.gcr.io/etcd:3.5.15-0 || echo "Failed to pull etcd"
-  sudo crio pull registry.k8s.io/coredns/coredns:v1.12.1 || sudo crio pull coredns/coredns:1.12.1 || echo "Failed to pull coredns"
-  echo "Individual image pulls completed"
+  echo "Primary registry failed, pulling images individually using kubeadm-resolved tags..."
+  # Resolve image list dynamically so versions always match the installed kubeadm
+  sudo kubeadm config images list --image-repository=registry.k8s.io 2>/dev/null | while read -r image; do
+    sudo crictl pull "$image" || echo "Warning: Failed to pull $image"
+  done
+  echo "Individual image pulls completed."
 fi
 
 echo "Preflight Check Passed: Downloaded All Required Images"
@@ -135,7 +128,8 @@ echo "Helm ${HELM_VERSION} installed successfully."
 # ============================================================
 echo "Downloading ArgoCD CLI ${ARGOCD_VERSION}..."
 ARGOCD_BINARY_URL="https://github.com/argoproj/argo-cd/releases/download/${ARGOCD_VERSION}/argocd-linux-amd64"
-ARGOCD_CHECKSUM_URL="${ARGOCD_BINARY_URL}.sha256"
+# Since ArgoCD v3.x the per-binary .sha256 file was replaced by a combined cli_checksums.txt
+ARGOCD_CHECKSUM_URL="https://github.com/argoproj/argo-cd/releases/download/${ARGOCD_VERSION}/cli_checksums.txt"
 
 MAX_RETRIES=5
 RETRY_COUNT=0
@@ -143,7 +137,7 @@ SUCCESS=false
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
   if curl -fsSL "${ARGOCD_BINARY_URL}" -o "${TEMP_DIR}/argocd" && \
-     curl -fsSL "${ARGOCD_CHECKSUM_URL}" -o "${TEMP_DIR}/argocd.sha256"; then
+     curl -fsSL "${ARGOCD_CHECKSUM_URL}" -o "${TEMP_DIR}/argocd_checksums.txt"; then
     SUCCESS=true
     break
   fi
@@ -158,18 +152,18 @@ if [ "$SUCCESS" = false ]; then
   exit 1
 fi
 
-# Verify checksum before installing
-EXPECTED_CHECKSUM=$(cat "${TEMP_DIR}/argocd.sha256" | awk '{print $1}')
+# Verify checksum — cli_checksums.txt contains one "<hash>  <filename>" line per platform
+EXPECTED_CHECKSUM=$(grep "argocd-linux-amd64" "${TEMP_DIR}/argocd_checksums.txt" | awk '{print $1}')
 ACTUAL_CHECKSUM=$(sha256sum "${TEMP_DIR}/argocd" | awk '{print $1}')
 if [ "$EXPECTED_CHECKSUM" != "$ACTUAL_CHECKSUM" ]; then
   echo "ERROR: ArgoCD CLI checksum mismatch! Expected: $EXPECTED_CHECKSUM, Got: $ACTUAL_CHECKSUM"
-  rm -f "${TEMP_DIR}/argocd" "${TEMP_DIR}/argocd.sha256"
+  rm -f "${TEMP_DIR}/argocd" "${TEMP_DIR}/argocd_checksums.txt"
   exit 1
 fi
 echo "ArgoCD CLI checksum verified."
 
 sudo install -m 755 "${TEMP_DIR}/argocd" /usr/local/bin/argocd
-rm -f "${TEMP_DIR}/argocd" "${TEMP_DIR}/argocd.sha256"
+rm -f "${TEMP_DIR}/argocd" "${TEMP_DIR}/argocd_checksums.txt"
 
 echo "ArgoCD CLI ${ARGOCD_VERSION} installed successfully."
 
