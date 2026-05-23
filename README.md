@@ -1,15 +1,15 @@
 # Kubernetes Cluster on Ubuntu 24.04 with Vagrant
 
-Automated Kubernetes cluster provisioning using Vagrant and VMware/VirtualBox. This project creates a production-ready Kubernetes cluster (v1.34) with CRI-O runtime, Calico networking, and configurable node count.
+Automated Kubernetes cluster provisioning using Vagrant and VMware/VirtualBox. Creates a Kubernetes cluster with CRI-O runtime, Calico networking, Metrics Server, and ArgoCD — all configurable via `settings.yaml`.
 
 ## Table of Contents
 
 - [Features](#features)
 - [Prerequisites](#prerequisites)
+- [Choosing a Hypervisor](#choosing-a-hypervisor)
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
 - [Project Structure](#project-structure)
-- [Cluster Information](#cluster-information)
 - [Usage](#usage)
 - [Cleanup](#cleanup)
 - [Troubleshooting](#troubleshooting)
@@ -17,41 +17,60 @@ Automated Kubernetes cluster provisioning using Vagrant and VMware/VirtualBox. T
 
 ## Features
 
-- **Kubernetes v1.34** with kubeadm initialization
-- **CRI-O v1.35** container runtime for improved performance
-- **Calico v3.28.2** for network policy and pod networking
-- **Ubuntu 24.04 LTS** as base operating system
-- **Configurable cluster**: adjust node count, CPU, memory via `settings.yaml`
-- **Multi-hypervisor support**: VMware Desktop and VirtualBox
-- **Automated provisioning**: DNS, networking, swap management
-- **Robust error handling**: Retry logic for transient network issues
-- **Kubeconfig generation**: Auto-configured for immediate cluster access
+- **Kubernetes** (version set in `settings.yaml`) initialized with kubeadm
+- **CRI-O** container runtime
+- **Calico** for pod networking and network policy
+- **Metrics Server** for resource usage (`kubectl top`)
+- **ArgoCD** installed and exposed via NodePort (HTTP: 30903, HTTPS: 30904)
+- **Helm** installed on the control plane
+- **Ubuntu 24.04 LTS** base OS
+- **Configurable**: node count, CPU, memory, versions via `settings.yaml`
+- **Multi-hypervisor**: VMware Desktop and VirtualBox (see [Choosing a Hypervisor](#choosing-a-hypervisor))
+- **Robust provisioning**: retry logic for package downloads, DNS stabilization, swap disabled
 
 ## Prerequisites
 
 ### System Requirements
 
 - Windows 10/11 or Linux
-- **VMware Workstation Pro** OR **VirtualBox** (with Vagrant plugins)
-- **Vagrant** 2.3+, **Git**
-- Minimum 8GB RAM (16GB+ for multi-node cluster), 20GB disk space
+- **Vagrant** 2.3+
+- **Git**
+- Minimum 8GB RAM (16GB+ recommended for multi-node), 20GB free disk space
 
-### Installation
+## Choosing a Hypervisor
 
-**For VMware:**
+This project supports two hypervisors. Pick one and follow the corresponding setup — the rest of the instructions are the same after that.
+
+| | VMware Workstation Pro | VirtualBox |
+|---|---|---|
+| **Branch** | `main` (this branch) | `virtualbox` branch |
+| **Performance** | Better (especially on Windows) | Good, free |
+| **Vagrant plugin** | `vagrant-vmware-desktop` (paid) | Built-in provider |
+
+### Option A — VMware Workstation Pro
+
+1. Install [VMware Workstation Pro](https://www.vmware.com/products/workstation-pro.html) and [Vagrant](https://www.vagrantup.com/downloads)
+2. Install the required Vagrant plugins:
 ```powershell
-# 1. Install VMware Workstation Pro and Vagrant
-# 2. Install VMware utilities and Vagrant plugins
 vagrant plugin install vagrant-vmware-desktop
 vagrant plugin install vagrant-hostmanager
 ```
+3. Use this branch (`main`) — VMware is the default provider, no extra env var needed.
 
-**For VirtualBox:**
+### Option B — VirtualBox
+
+1. Install [VirtualBox](https://www.virtualbox.org/wiki/Downloads) and [Vagrant](https://www.vagrantup.com/downloads)
+2. Switch to the VirtualBox branch and install the plugin:
 ```powershell
-# 1. Install VirtualBox and Vagrant
-# 2. Install Vagrant plugin
+git checkout virtualbox
 vagrant plugin install vagrant-hostmanager
 ```
+3. Set VirtualBox as the provider before running `vagrant up`:
+```powershell
+$env:VAGRANT_DEFAULT_PROVIDER = "virtualbox"
+```
+
+---
 
 ## Quick Start
 
@@ -62,7 +81,13 @@ git clone <repository-url>
 cd k8s_vagrant_win11
 ```
 
-### 2. Configure (Edit settings.yaml)
+### 2. Select Hypervisor
+
+Follow [Option A (VMware)](#option-a--vmware-workstation-pro) or [Option B (VirtualBox)](#option-b--virtualbox) above before continuing.
+
+### 3. Configure
+
+Edit `settings.yaml` to set node count, resources, and software versions:
 
 ```yaml
 nodes:
@@ -73,20 +98,22 @@ nodes:
     memory: 6144
 software:
   kubernetes: v1.34
+  crio: v1.35
+  calico: 3.28.2
 ```
 
-### 3. Launch Cluster
+### 4. Launch Cluster
 
 ```powershell
-# VMware (default)
+# VMware (Option A — default, no env var needed)
 vagrant up
 
-# VirtualBox
+# VirtualBox (Option B — set provider first)
 $env:VAGRANT_DEFAULT_PROVIDER = "virtualbox"
 vagrant up
 ```
 
-### 4. Verify
+### 5. Verify
 
 ```powershell
 vagrant status
@@ -98,153 +125,153 @@ kubectl get nodes
 
 ### settings.yaml
 
-Key configuration parameters:
-
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `nodes.workers.count` | 2 | Number of worker nodes |
-| `nodes.control.cpu` | 2 | Control plane vCPUs |
-| `nodes.control.memory` | 6144 | Control plane RAM (MB) |
-| `pod_cidr` | 10.244.0.0/16 | Pod network |
-| `service_cidr` | 10.96.0.0/12 | Service network |
-| `kubernetes` | v1.34 | Kubernetes version |
-| `crio` | v1.35 | CRI-O runtime version |
-| `calico` | 3.28.2 | Calico network plugin version |
-
-**Network Details:**
-- Control Plane: 192.168.100.10
-- Worker Nodes: 192.168.100.20+
+| `nodes.workers.count` | `2` | Number of worker nodes |
+| `nodes.control.cpu` | `2` | Control plane vCPUs |
+| `nodes.control.memory` | `6144` | Control plane RAM (MB) |
+| `nodes.workers.cpu` | `2` | Worker node vCPUs |
+| `nodes.workers.memory` | `6144` | Worker node RAM (MB) |
+| `nodes.control.ip` | `192.168.100.10` | Control plane IP |
+| `nodes.workers.ip_start` | `192.168.100.20` | First worker IP (increments per node) |
+| `network.pod_cidr` | `10.244.0.0/16` | Pod network CIDR |
+| `network.service_cidr` | `10.96.0.0/12` | Service network CIDR |
+| `network.dns_servers` | `1.1.1.1, 9.9.9.9` | DNS servers for VMs |
+| `software.kubernetes` | `v1.34` | Kubernetes version |
+| `software.crio` | `v1.35` | CRI-O runtime version |
+| `software.calico` | `3.28.2` | Calico version |
+| `software.box` | `bento/ubuntu-24.04` | Vagrant base box |
+| `shared_folders` | `[]` | Host↔VM folder mappings |
 
 ## Project Structure
 
 ```
 k8s_vagrant_win11/
-├── Vagrantfile           # Main Vagrant configuration
+├── Vagrantfile           # Vagrant configuration (VMware; see virtualbox branch for VirtualBox)
 ├── settings.yaml         # Cluster configuration
-├── README.md            # This file
-├── .gitignore           # Git ignore rules
-├── LICENSE              # Project license
-├── aliases.sh           # Useful bash aliases
-├── configs/             # Generated kubeconfig files (do NOT commit)
-│   ├── config           # Kubeconfig for cluster access
-│   └── join.sh          # Worker node join script
+├── aliases.sh            # Useful kubectl bash aliases
+├── README.md
+├── .gitignore
+├── LICENSE
+├── configs/              # Generated at provision time (do NOT commit)
+│   ├── config            # Kubeconfig for cluster access
+│   └── join.sh           # Worker node join command
 └── scripts/
-    ├── common.sh        # Common setup (DNS, CRI-O, k8s packages)
-    ├── control.sh       # Control plane initialization
-    └── node.sh          # Worker node configuration
+    ├── common.sh         # CRI-O, Kubernetes packages, kernel config (all nodes)
+    ├── control.sh        # kubeadm init, Calico, Helm, Metrics Server, ArgoCD
+    └── node.sh           # Worker join and kubeconfig setup
 ```
-
-## Cluster Information
-
-**What Gets Installed:**
-- CRI-O container runtime
-- Kubernetes tools (kubelet, kubeadm, kubectl)
-- Calico network plugin
-- System configuration: swap disabled, IP forwarding enabled, required kernel modules
-
-**Generated Files:**
-- `configs/config` - Kubeconfig for cluster access
-- `configs/join.sh` - Worker node join command (auto-executed)
 
 ## Usage
 
 ### Access the Cluster
 
 ```powershell
-# SSH into VMs
+# SSH into nodes
 vagrant ssh control-plane
 vagrant ssh node01
 
-# From host using kubeconfig
-$env:KUBECONFIG="$(Get-Location)\configs\config"
+# Use kubeconfig from host
+$env:KUBECONFIG = "$(Get-Location)\configs\config"
 kubectl get nodes
 ```
 
-### Port Forwarding to Host
+### Kubectl Aliases
 
-**Method 1: kubectl port-forward (Recommended)**
+Source `aliases.sh` inside the VM for handy shortcuts:
 
 ```bash
-# Forward service to localhost
-kubectl port-forward svc/nginx 8080:80
+source /vagrant/aliases.sh
 
-# Forward dashboard
-kubectl port-forward -n kubernetes-dashboard svc/kubernetes-dashboard 8443:443
+k get nodes          # kubectl
+kaa                  # kubectl get all -A
+kn kube-system       # set current namespace
+kd <pod>             # force delete pod
 ```
 
-**Method 2: SSH Tunnel**
+### ArgoCD
+
+ArgoCD is installed in the `argocd` namespace and exposed as NodePort:
 
 ```bash
-# Create SSH tunnel through Vagrant
-vagrant ssh control-plane -- -N -L 8080:localhost:8080
+# Get initial admin password
+kubectl -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath="{.data.password}" | base64 -d
+
+# Access UI
+# HTTP:  http://192.168.100.10:30903
+# HTTPS: https://192.168.100.10:30904
+
+# Login via CLI
+argocd login 192.168.100.10:30904 --insecure
 ```
 
-**Method 3: NodePort Service**
+### Port Forwarding Options
 
+**kubectl port-forward (recommended for ad-hoc access):**
 ```bash
-# Expose service as NodePort
+kubectl port-forward svc/my-service 8080:80
+```
+
+**NodePort service:**
+```bash
 kubectl expose deployment nginx --type=NodePort --port=80
-kubectl get svc nginx  # Find assigned port (e.g., 30123)
+kubectl get svc nginx  # note the assigned port, e.g. 30123
 # Access: http://192.168.100.10:30123
 ```
 
-**Method 4: Persistent Port Forwarding (Edit Vagrantfile)**
-
+**Persistent forwarding via Vagrantfile:**
 ```ruby
 control.vm.network "forwarded_port", guest: 8080, host: 8080
-control.vm.network "forwarded_port", guest: 8443, host: 8443
 ```
+Then apply: `vagrant reload`
 
-Then restart: `vagrant reload`
-
-### Essential Commands
+### Common kubectl Commands
 
 ```bash
-# Cluster and node status
+# Cluster status
 kubectl get nodes
-kubectl cluster-info
-kubectl describe node <node-name>
-
-# View pods and workloads
 kubectl get pods -A
-kubectl get deployments -A
-kubectl get events -A --sort-by='.lastTimestamp'
+kubectl cluster-info
 
-# Deploy test app
+# Deploy and expose
 kubectl create deployment nginx --image=nginx
 kubectl expose deployment nginx --port=80 --type=NodePort
 
-# Logs and debugging
+# Debugging
+kubectl describe node <node-name>
 kubectl logs -f <pod-name>
+kubectl get events -A --sort-by='.lastTimestamp'
 kubectl run -it --rm debug --image=nicolaka/netshoot --restart=Never -- bash
 ```
 
 ## Cleanup
 
 ```powershell
-# Full cleanup
+# Destroy all VMs and clean up
 vagrant destroy -f
-Remove-Item -Path configs/* -Force
+Remove-Item -Path configs\* -Force
 Remove-Item -Path .vagrant -Recurse -Force
 
-# Partial operations
-vagrant halt      # Stop without destroying
-vagrant suspend   # Suspend to disk
-vagrant resume    # Resume from suspend
-vagrant reload    # Restart with config reload
+# Non-destructive operations
+vagrant halt       # Stop VMs
+vagrant suspend    # Suspend to disk
+vagrant resume     # Resume from suspend
+vagrant reload     # Restart and re-apply Vagrantfile config
 ```
 
 ## Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
-| **Package download fails** | Scripts include retry logic. Check internet: `ping 8.8.8.8`. Rebuild: `vagrant destroy -f && vagrant up` |
-| **Insufficient resources** | Check RAM: `Get-ComputerInfo \| Select TotalPhysicalMemory`. Reduce node count/memory in `settings.yaml` |
-| **Kubeconfig access denied** | Verify control plane running: `vagrant status`. Regenerate: `vagrant up --provision` |
-| **Calico pods in CrashLoop** | Check logs: `kubectl logs -n kube-system -l k8s-app=calico-kube-controllers`. Verify pod CIDR available |
-| **Worker node join fails** | Verify control plane ready: `kubectl get nodes`. Check token valid: `kubeadm token list` |
+| **Package download fails** | Retry logic is built in. Check connectivity: `ping 8.8.8.8`. Rebuild: `vagrant destroy -f && vagrant up` |
+| **Insufficient resources** | Check RAM: `Get-ComputerInfo \| Select TotalPhysicalMemory`. Lower `memory` or `count` in `settings.yaml` |
+| **Kubeconfig not working** | Verify control plane is up: `vagrant status`. Re-provision: `vagrant up --provision` |
+| **Calico pods crashing** | Check logs: `kubectl logs -n kube-system -l k8s-app=calico-node`. Verify `pod_cidr` is not in use |
+| **Worker node join fails** | Confirm control plane is ready: `kubectl get nodes`. Check token: `kubeadm token list` |
+| **ArgoCD unreachable** | Check pods: `kubectl get pods -n argocd`. Verify NodePort: `kubectl get svc -n argocd` |
 
-**Debug Provisioning:**
+**Debug provisioning:**
 ```powershell
 vagrant up --debug 2>&1 | Tee-Object -FilePath provision.log
 vagrant ssh control-plane -- sudo journalctl -xe
@@ -257,10 +284,11 @@ vagrant ssh control-plane -- sudo journalctl -xe
 - [kubeadm Guide](https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/)
 - [CRI-O Docs](https://cri-o.io/)
 - [Calico Docs](https://docs.tigera.io/calico/latest/)
+- [ArgoCD Docs](https://argo-cd.readthedocs.io/)
+- [Helm Docs](https://helm.sh/docs/)
 
 ## Notes
 
-- **Development Only**: For production, implement security policies and RBAC
-- **Sensitive Data**: Never commit `configs/` directory to version control
-- **Firewall**: Allow VM↔Host communication through firewall
-
+- **Development only**: Not hardened for production use
+- **Never commit** the `configs/` directory — it contains cluster credentials
+- Allow VM↔Host traffic through your host firewall for NodePort and ArgoCD access
